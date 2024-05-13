@@ -57,7 +57,7 @@ void ctr_example()
 	/* so you can see which bytes were written: */
 	memset(ct,0,512);
 	memset(pt,0,512);
-	char* message = "this is a test message :D";
+	char* message = "bogos binted";
 	size_t len = strlen(message);
 	/* encrypt: */
 	EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
@@ -144,9 +144,6 @@ int main()
 	// rsa_example();
 	printf("~~~~~~~~~~~~~~~~~~~~~~~\n");
 	ctr_example();
-	printf("~~~~~~~~~~~~~~~~~~~~~~~\n");
-	sha_example();
-	printf("~~~~~~~~~~~~~~~~~~~~~~~\n");
-	hmac_example();
+	
 	return 0;
 }

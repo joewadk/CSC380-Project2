@@ -9,7 +9,11 @@
 #include <getopt.h>
 #include "dh.h"
 #include "keys.h"
-
+#include <gmp.h>
+#include "util.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #ifndef PATH_MAX
 #define PATH_MAX 1024
 #endif
@@ -20,6 +24,7 @@ static GtkTextView*  tview; /* view for transcript */
 static GtkTextMark*   mark; /* used for scrolling to end of transcript, etc */
 
 static pthread_t trecv;     /* wait for incoming messagess and post to queue */
+
 void* recvMsg(void*);       /* for trecv */
 
 #define max(a, b)         \
@@ -38,21 +43,24 @@ static void error(const char *msg)
 	exit(EXIT_FAILURE);
 }
 
-int initServerNet(int port)
-{
+int initServerNet(int port){
 	int reuse = 1;
 	struct sockaddr_in serv_addr;
 	listensock = socket(AF_INET, SOCK_STREAM, 0);
 	setsockopt(listensock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
 	/* NOTE: might not need the above if you make sure the client closes first */
+
 	if (listensock < 0)
 		error("ERROR opening socket");
+
 	bzero((char *) &serv_addr, sizeof(serv_addr));
 	serv_addr.sin_family = AF_INET;
 	serv_addr.sin_addr.s_addr = INADDR_ANY;
 	serv_addr.sin_port = htons(port);
+	
 	if (bind(listensock, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0)
 		error("ERROR on binding");
+		
 	fprintf(stderr, "listening on port %i...\n",port);
 	listen(listensock,1);
 	socklen_t clilen;
@@ -66,6 +74,8 @@ int initServerNet(int port)
 	return 0;
 }
 
+
+
 static int initClientNet(char* hostname, int port)
 {
 	struct sockaddr_in serv_addr;
@@ -74,20 +84,25 @@ static int initClientNet(char* hostname, int port)
 	if (sockfd < 0)
 		error("ERROR opening socket");
 	server = gethostbyname(hostname);
+	
 	if (server == NULL) {
 		fprintf(stderr,"ERROR, no such host\n");
 		exit(0);
 	}
+	
 	bzero((char *) &serv_addr, sizeof(serv_addr));
 	serv_addr.sin_family = AF_INET;
 	memcpy(&serv_addr.sin_addr.s_addr,server->h_addr,server->h_length);
 	serv_addr.sin_port = htons(port);
+
 	if (connect(sockfd,(struct sockaddr *) &serv_addr,sizeof(serv_addr)) < 0)
 		error("ERROR connecting");
-	/* at this point, should be able to send/recv on sockfd */
-	return 0;
-}
 
+	
+
+	return 0;
+
+};
 static int shutdownNetwork()
 {
 	shutdown(sockfd,2);
@@ -142,6 +157,9 @@ static void tsappend(char* message, char** tagnames, int ensurenewline)
 	gtk_text_buffer_delete_mark(tbuf,mark);
 }
 
+#include <openssl/evp.h>
+#include <openssl/err.h>
+
 static void sendMessage(GtkWidget* w /* <-- msg entry widget */, gpointer /* data */)
 {
 	char* tags[2] = {"self",NULL};
@@ -150,7 +168,7 @@ static void sendMessage(GtkWidget* w /* <-- msg entry widget */, gpointer /* dat
 	GtkTextIter mend;   /* end of message pointer */
 	gtk_text_buffer_get_start_iter(mbuf,&mstart);
 	gtk_text_buffer_get_end_iter(mbuf,&mend);
-	char* message = gtk_text_buffer_get_text(mbuf,&mstart,&mend,1);
+	char* message = gtk_text_buffer_get_text(mbuf,&mstart,&mend,1); // this will have to be encrypted <--------------------------------------
 	size_t len = g_utf8_strlen(message,-1);
 	/* XXX we should probably do the actual network stuff in a different
 	 * thread and have it call this once the message is actually sent. */
@@ -165,6 +183,8 @@ static void sendMessage(GtkWidget* w /* <-- msg entry widget */, gpointer /* dat
 	gtk_widget_grab_focus(w);
 }
 
+
+
 static gboolean shownewmessage(gpointer msg)
 {
 	char* tags[2] = {"friend",NULL};
@@ -178,10 +198,13 @@ static gboolean shownewmessage(gpointer msg)
 
 int main(int argc, char *argv[])
 {
-	if (init("params") != 0) {
+	if (init("params") != 0) { //read p q and g from /params
 		fprintf(stderr, "could not read DH params from file 'params'\n");
 		return 1;
 	}
+
+	
+
 	// define long options
 	static struct option long_opts[] = {
 		{"connect",  required_argument, 0, 'c'},
@@ -196,6 +219,7 @@ int main(int argc, char *argv[])
 	int port = 1337;
 	char hostname[HOST_NAME_MAX+1] = "localhost";
 	hostname[HOST_NAME_MAX] = 0;
+
 
 	while ((c = getopt_long(argc, argv, "c:lp:h", long_opts, &opt_index)) != -1) {
 		switch (c) {
@@ -217,13 +241,148 @@ int main(int argc, char *argv[])
 				return 1;
 		}
 	}
+		int is_listener = 0; // Flag to indicate if this instance is the listener
+
+	    // Check if this instance is the listener
+	    if (argc > 1 && strcmp(argv[1], "-l") == 0) {
+		is_listener = 1;
+	    };
+	// Track the client based on the instance
+        if (is_listener) {
+    // Perform actions specific to the listener instance
+    printf("Listener instance accepted a new client.\n");
+    int option=1;
+    NEWZ(b);
+    NEWZ(B);
+    dhGen(b, B);
+
+    // Convert B to a string
+    char* B_str = mpz_get_str(NULL, 10, B);
+
+    // Create a socket
+    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    setsockopt(listensock, SOL_SOCKET, SO_REUSEADDR, &option, sizeof(option));
+    if (sockfd < 0) {
+        perror("[-] Socket error");
+        exit(EXIT_FAILURE);
+    }
+
+    struct sockaddr_in listener_addr;
+    bzero((char *) &listener_addr, sizeof(listener_addr));
+    listener_addr.sin_family = AF_INET;
+    listener_addr.sin_addr.s_addr = INADDR_ANY;
+    listener_addr.sin_port = htons(port);
+
+    // Bind the socket
+    if (bind(sockfd, (struct sockaddr *) &listener_addr, sizeof(listener_addr)) < 0) {
+        perror("[-] Bind error");
+        exit(EXIT_FAILURE);
+    }
+
+    // Start listening for connections
+    listen(sockfd, 1);
+
+    // Accept a connection from the connector
+    struct sockaddr_in connector_addr;
+    socklen_t addr_len = sizeof(connector_addr);
+    int connector_socket = accept(sockfd, (struct sockaddr *)&connector_addr, &addr_len);
+    if (connector_socket < 0) {
+        perror("[-] Accept error");
+        exit(EXIT_FAILURE);
+    }
+
+    // Send B to the connector
+    ssize_t bytes_sent = send(connector_socket, B_str, strlen(B_str), 0);
+    if (bytes_sent == -1) { // Check for failure
+        perror("Failed to send B to connector");
+        exit(EXIT_FAILURE);
+    }
+	close(sockfd);
+    free(B_str); // Free the allocated string
+    mpz_clears(b, B, NULL); // Clear the mpz variables
+} else {
+    // Perform actions specific to the connector instance
+    printf("Connector instance accepted a new client.\n");
+
+
+    NEWZ(a);
+    NEWZ(A);
+    dhGen(a, A);
+
+    // Create a socket
+    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd < 0) {
+        perror("[-] Socket error");
+        exit(EXIT_FAILURE);
+    }
+
+    // Resolve the server's address
+    struct sockaddr_in server_addr;
+    struct hostent *server = gethostbyname(hostname);
+    if (server == NULL) {
+        fprintf(stderr, "ERROR: No such host\n");
+        exit(EXIT_FAILURE);
+    }
+
+    // Initialize server address struct
+    bzero((char *) &server_addr, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    bcopy((char *)server->h_addr, (char *)&server_addr.sin_addr.s_addr, server->h_length);
+    server_addr.sin_port = htons(port);
+
+    // Connect to the server
+    if (connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        perror("[-] Connection error");
+        exit(EXIT_FAILURE);
+    }
+
+    // Receive B from the listener
+    char buffer[1024];
+    ssize_t bytes_received = recv(sockfd, buffer, sizeof(buffer), 0);
+    if (bytes_received == -1) {
+        perror("Failed to receive B from listener");
+        exit(EXIT_FAILURE);
+    }
+
+    // Convert received B from string to mpz_t
+    NEWZ(B);
+    mpz_set_str(B, buffer, 10);
+
+    // Compute shared secret using Diffie-Hellman key exchange
+    mpz_t shared_secret;
+    mpz_init(shared_secret);
+    // Compute shared secret using Diffie-Hellman key exchange
+    // You need to implement this function
+
+    // Clear the mpz variables
+    mpz_clears(a, A, B, NULL);
+
+    // Now you have the shared secret ready to use
+
+    // Close the socket
+    close(sockfd);
+}
+
+
+
+	    
+
+	  // in short i have created a flag to determine which client i am working with. this allows me to manually perform 3DH and handle instances separately.
+	  
+	 
+	  
+	 
 	/* NOTE: might want to start this after gtk is initialized so you can
 	 * show the messages in the main window instead of stderr/stdout.  If
 	 * you decide to give that a try, this might be of use:
 	 * https://docs.gtk.org/gtk4/func.is_initialized.html */
 	if (isclient) {
+	//send computed public key using private key a to server and await <--------------------------------------
+	//await for server, then compute shared secretusing dh3final<--------------------------------------
 		initClientNet(hostname,port);
 	} else {
+	//server awaits and then sends computed public key using private key b <--------------------------------------
+	//compute shared secret using dh3final <--------------------------------------
 		initServerNet(port);
 	}
 
@@ -290,7 +449,7 @@ void* recvMsg(void*)
 			return 0;
 		}
 		char* m = malloc(maxlen+2);
-		memcpy(m,msg,nbytes);
+		memcpy(m,msg,nbytes); //gonna decrypt at this stage<--------------------------------------
 		if (m[nbytes-1] != '\n')
 			m[nbytes++] = '\n';
 		m[nbytes] = 0;
@@ -298,3 +457,4 @@ void* recvMsg(void*)
 	}
 	return 0;
 }
+
