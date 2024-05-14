@@ -196,14 +196,67 @@ static gboolean shownewmessage(gpointer msg)
 	return 0;
 }
 
+// Function to write data to a file
+void writeFile(const char *filename, const char *data) {
+	    FILE *file;
+	    // Open the file for writing (overwrite mode)
+	    file = fopen(filename, "w");
+	    if (file == NULL) {
+		perror("Error opening file for writing");
+		return;
+	    }
+	    // Write data to the file
+	    fprintf(file, "%s\n", data);
+	    // Close the file
+	    fclose(file);
+}
+
+
+// Function to read data from a file and return as a string
+char* readFile(const char *filename) {
+	    FILE *file;
+	    char *buffer = NULL; // Buffer to store read data
+	    long length;
+	    size_t result;
+	    // Open the file for reading
+	    file = fopen(filename, "r");
+	    if (file == NULL) {
+		perror("Error opening file for reading");
+		return NULL;
+	    }
+	    // Get file length
+	    fseek(file, 0, SEEK_END);
+	    length = ftell(file);
+	    rewind(file);
+	    // Allocate memory for the buffer
+	    buffer = (char*) malloc(length + 1);
+	    if (buffer == NULL) {
+		perror("Memory error");
+		fclose(file);
+		return NULL;
+	    }
+	    // Read data from the file
+	    result = fread(buffer, 1, length, file);
+	    if (result != length) {
+		perror("Reading error");
+		fclose(file);
+		free(buffer);
+		return NULL;
+	    }
+	    // Null-terminate the string
+	    buffer[length] = '\0';
+	    // Close the file
+	    fclose(file);
+	    return buffer;
+}
+
+
 int main(int argc, char *argv[])
 {
 	if (init("params") != 0) { //read p q and g from /params
 		fprintf(stderr, "could not read DH params from file 'params'\n");
 		return 1;
 	}
-
-	
 
 	// define long options
 	static struct option long_opts[] = {
@@ -247,142 +300,142 @@ int main(int argc, char *argv[])
 	    if (argc > 1 && strcmp(argv[1], "-l") == 0) {
 		is_listener = 1;
 	    };
+	    
+// in short i have created a flag to determine which client i am working with. this allows me to manually perform 3DH and handle instances separately.	
+	
 	// Track the client based on the instance
         if (is_listener) {
-    // Perform actions specific to the listener instance
-    printf("Listener instance accepted a new client.\n");
-    int option=1;
-    NEWZ(b);
-    NEWZ(B);
-    dhGen(b, B);
+	    // Perform actions specific to the listener instance
+	    printf("Listener instance accepted a new client.\n");
+	    NEWZ(b);//private
+	    NEWZ(B);
+	    dhGen(b, B);
 
-    // Convert B to a string
-    char* B_str = mpz_get_str(NULL, 10, B);
+	    // Convert B to a string
+	    char* B_str = mpz_get_str(NULL, 10, B);
+	    writeFile("B.txt",B_str); //send B
+	
+		
+	//ephemeral keys
+	    NEWZ(y);
+	    NEWZ(Y);
+	    dhGen(y,Y);
+	    
+	    
+	// Convert Y to a string
+	    char* Y_str = mpz_get_str(NULL, 10, Y);
+	    writeFile("Y.txt",Y_str); //send Y
+	    
+ 	//receive A from connector instance
+	   char* A_recv= readFile("A.txt");
+	   //printf("We received: %s\n",A_recv); //<- test to see if read and then clear worked
+	   mpz_t A; 
+	   mpz_init(A);
+	   
+	    if (mpz_set_str(A, A_recv, 10) != 0) {
+		printf("Error: Invalid string for conversion to mpz_t\n");
+		return 1;
+	    }
+		
+		
+	    free(A_recv); //free memory
 
-    // Create a socket
-    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    setsockopt(listensock, SOL_SOCKET, SO_REUSEADDR, &option, sizeof(option));
-    if (sockfd < 0) {
-        perror("[-] Socket error");
-        exit(EXIT_FAILURE);
-    }
+	
+	//receive X from connector instance
+	   char* X_recv= readFile("X.txt");
+	   //printf("We received: %s\n",X_recv); //<- test to see if read and then clear worked
+	   mpz_t X; 
+	   mpz_init(X);
+	  
+	    if (mpz_set_str(X, X_recv, 10) != 0) {
+		printf("Error: Invalid string for conversion to mpz_t\n");
+		return 1;
+	    }
+		
+		
+	    free(X_recv); //free memory
+	
+	//calculate 3dh value
+	unsigned char keyBuf[PATH_MAX];
+	 size_t bufLen = PATH_MAX;
+	 //gmp_printf("b = %Zd, B = %Zd, y = %Zd, Y = %Zd, A = %Zd, X = %Zd\n", b,B,y,Y,A,X); //<-- testing in case any variable wasnt read correctly
 
-    struct sockaddr_in listener_addr;
-    bzero((char *) &listener_addr, sizeof(listener_addr));
-    listener_addr.sin_family = AF_INET;
-    listener_addr.sin_addr.s_addr = INADDR_ANY;
-    listener_addr.sin_port = htons(port);
+	 dh3Final(b, B, y, Y, A, X, keyBuf, bufLen); //<--- this call should work, but can run into segmentation faults. 
 
-    // Bind the socket
-    if (bind(sockfd, (struct sockaddr *) &listener_addr, sizeof(listener_addr)) < 0) {
-        perror("[-] Bind error");
-        exit(EXIT_FAILURE);
-    }
+	 printf("Our k1 value is %s\n",keyBuf);
+	
+	
+	    }
+	 else {// Perform actions specific to the connector instance
+	    printf("Connector instance accepted a new client.\n");
 
-    // Start listening for connections
-    listen(sockfd, 1);
-
-    // Accept a connection from the connector
-    struct sockaddr_in connector_addr;
-    socklen_t addr_len = sizeof(connector_addr);
-    int connector_socket = accept(sockfd, (struct sockaddr *)&connector_addr, &addr_len);
-    if (connector_socket < 0) {
-        perror("[-] Accept error");
-        exit(EXIT_FAILURE);
-    }
-
-    // Send B to the connector
-    ssize_t bytes_sent = send(connector_socket, B_str, strlen(B_str), 0);
-    if (bytes_sent == -1) { // Check for failure
-        perror("Failed to send B to connector");
-        exit(EXIT_FAILURE);
-    }
-	close(sockfd);
-    free(B_str); // Free the allocated string
-    mpz_clears(b, B, NULL); // Clear the mpz variables
-} else {
-    // Perform actions specific to the connector instance
-    printf("Connector instance accepted a new client.\n");
-
-
-    NEWZ(a);
-    NEWZ(A);
-    dhGen(a, A);
-
-    // Create a socket
-    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd < 0) {
-        perror("[-] Socket error");
-        exit(EXIT_FAILURE);
-    }
-
-    // Resolve the server's address
-    struct sockaddr_in server_addr;
-    struct hostent *server = gethostbyname(hostname);
-    if (server == NULL) {
-        fprintf(stderr, "ERROR: No such host\n");
-        exit(EXIT_FAILURE);
-    }
-
-    // Initialize server address struct
-    bzero((char *) &server_addr, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    bcopy((char *)server->h_addr, (char *)&server_addr.sin_addr.s_addr, server->h_length);
-    server_addr.sin_port = htons(port);
-
-    // Connect to the server
-    if (connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
-        perror("[-] Connection error");
-        exit(EXIT_FAILURE);
-    }
-
-    // Receive B from the listener
-    char buffer[1024];
-    ssize_t bytes_received = recv(sockfd, buffer, sizeof(buffer), 0);
-    if (bytes_received == -1) {
-        perror("Failed to receive B from listener");
-        exit(EXIT_FAILURE);
-    }
-
-    // Convert received B from string to mpz_t
-    NEWZ(B);
-    mpz_set_str(B, buffer, 10);
-
-    // Compute shared secret using Diffie-Hellman key exchange
-    mpz_t shared_secret;
-    mpz_init(shared_secret);
-    // Compute shared secret using Diffie-Hellman key exchange
-    // You need to implement this function
-
-    // Clear the mpz variables
-    mpz_clears(a, A, B, NULL);
-
-    // Now you have the shared secret ready to use
-
-    // Close the socket
-    close(sockfd);
-}
-
-
-
+	    NEWZ(a); //private
+	    NEWZ(A);
+	    dhGen(a, A);
+	
+	//now we'll set up ephemeral keys
+	    NEWZ(x);
+	    NEWZ(X);
+	    dhGen(x,X);
+	    
+	    //receive B from listener instance
+	   char* B_recv= readFile("B.txt");
+//printf("We received for B: %s\n",B_recv); //<- test to see if read and then clear worked
+	   mpz_t B; 
+	   mpz_init(B);
+	   
+	    if (mpz_set_str(B, B_recv, 10) != 0) {
+		printf("Error: Invalid string for conversion to mpz_t\n");
+		return 1;
+	    }
+		
+		
+	    free(B_recv); //free memory
+	
+	
+	// Convert A to a string
+	    char* A_str = mpz_get_str(NULL, 10, A);
+	    writeFile("A.txt",A_str); //send A
+	
+	// Convert X to a string
+	    char* X_str = mpz_get_str(NULL, 10, X);
+	    writeFile("X.txt",X_str); //send X
+	
+	
+	
+	   
+	  //receive Y from connector instance
+	   char* Y_recv= readFile("Y.txt");
+//printf("We received for Y: %s\n",Y_recv); //<- test to see if read and then clear worked
+	   mpz_t Y; 
+	mpz_init(Y);
+	    if (mpz_set_str(Y, Y_recv, 10) != 0) {
+		printf("Error: Invalid string for conversion to mpz_t\n");
+		return 1;
+	    }
+		
+	    free(Y_recv); //free memory
 	    
 
-	  // in short i have created a flag to determine which client i am working with. this allows me to manually perform 3DH and handle instances separately.
-	  
 	 
-	  
+	    //calculate k1
+	unsigned char keyBuf[PATH_MAX];
+
+	 size_t bufLen = PATH_MAX;
+	 //gmp_printf("a = %Zd, A = %Zd, x = %Zd, X = %Zd, B = %Zd, Y = %Zd\n", a,A,x,X,B,Y); <-- testing in case any variable wasnt read correctly
+
+	 dh3Final(a, A, x, X, B, Y, keyBuf, bufLen); //<--- this call should work, but can run into segmentation faults. 
+
+	 printf("Our k2 value is %s\n",keyBuf);
+}
 	 
 	/* NOTE: might want to start this after gtk is initialized so you can
 	 * show the messages in the main window instead of stderr/stdout.  If
 	 * you decide to give that a try, this might be of use:
 	 * https://docs.gtk.org/gtk4/func.is_initialized.html */
 	if (isclient) {
-	//send computed public key using private key a to server and await <--------------------------------------
-	//await for server, then compute shared secretusing dh3final<--------------------------------------
 		initClientNet(hostname,port);
 	} else {
-	//server awaits and then sends computed public key using private key b <--------------------------------------
-	//compute shared secret using dh3final <--------------------------------------
 		initServerNet(port);
 	}
 
@@ -449,7 +502,7 @@ void* recvMsg(void*)
 			return 0;
 		}
 		char* m = malloc(maxlen+2);
-		memcpy(m,msg,nbytes); //gonna decrypt at this stage<--------------------------------------
+		memcpy(m,msg,nbytes); 
 		if (m[nbytes-1] != '\n')
 			m[nbytes++] = '\n';
 		m[nbytes] = 0;
